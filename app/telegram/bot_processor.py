@@ -24,6 +24,7 @@ class BotProcessor:
         filename: str,
         bot_username: str,
         command: str,
+        target_group: str = "",
         on_update: Callable | None = None,
         session_token: str = "",
     ) -> None:
@@ -31,12 +32,52 @@ class BotProcessor:
         self.filename = filename
         self.session_token = session_token
         self.bot_username = bot_username.lstrip("@")
+        self.target_group = target_group
         self.command = command
         self.on_update = on_update
 
     async def _emit(self, event_type: str, data: dict) -> None:
         if self.on_update:
             await self.on_update(event_type, data)
+
+    async def _forward_one(self, result: ParsedResult) -> bool:
+        if not self.target_group or not result.is_valid():
+            return False
+        msg = result.format_message()
+        await session_manager.send_to_group(
+            self.session_id, self.filename, self.target_group, msg, self.session_token
+        )
+        await asyncio.sleep(0.5)
+        return True
+
+    async def _check_live_results(
+        self,
+        collected: list[str],
+        seen_found: set[str],
+        seen_failed: set[str],
+        live_found: list[dict],
+        live_failed: list[str],
+    ) -> None:
+        valid, failed = parse_results("\n".join(collected))
+        for r in valid:
+            if r.cc in seen_found:
+                continue
+            seen_found.add(r.cc)
+            d = r.to_dict()
+            live_found.append(d)
+            await self._emit("result_found", {"result": d, "session_id": self.session_id})
+            if await self._forward_one(r):
+                await self._emit(
+                    "forwarded",
+                    {"session_id": self.session_id, "cc": r.cc, "result": d},
+                )
+        for f in failed:
+            key = f[:120]
+            if key in seen_failed:
+                continue
+            seen_failed.add(key)
+            live_failed.append(f)
+            await self._emit("result_failed", {"text": f, "session_id": self.session_id})
 
     async def process_chunk(self, chunk_text: str) -> dict:
         """Send command + chunk, collect all bot messages until completion marker."""
@@ -45,6 +86,10 @@ class BotProcessor:
         bot_entity = await client.get_entity(self.bot_username)
         message_body = f"{self.command}\n{chunk_text}" if self.command else chunk_text
         collected: list[str] = []
+        seen_found: set[str] = set()
+        seen_failed: set[str] = set()
+        live_found: list[dict] = []
+        live_failed: list[str] = []
         retries = 0
 
         while retries <= settings.max_retries:
@@ -71,6 +116,9 @@ class BotProcessor:
 
                         collected.append(text)
                         await self._emit("message", {"text": text, "session_id": self.session_id})
+                        await self._check_live_results(
+                            collected, seen_found, seen_failed, live_found, live_failed
+                        )
 
                         is_spam, wait_secs = is_antispam_message(text)
                         if is_spam:
@@ -107,13 +155,14 @@ class BotProcessor:
         if not full_text:
             raise RuntimeError("Bot returned no response")
 
-        valid, failed = parse_results(full_text)
+        # Final parse catch anything missed
+        await self._check_live_results(collected, seen_found, seen_failed, live_found, live_failed)
         duration = time.monotonic() - start
 
         return {
             "result_text": full_text,
-            "found": [r.to_dict() for r in valid],
-            "failed": failed,
+            "found": live_found,
+            "failed": live_failed,
             "duration": round(duration, 2),
             "error": "",
         }
@@ -123,6 +172,7 @@ class BotProcessor:
         results: list[ParsedResult | dict],
         target_group: str,
     ) -> int:
+        """Forward any results not already sent live."""
         forwarded = 0
         for item in results:
             if isinstance(item, dict):

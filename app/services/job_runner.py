@@ -74,7 +74,42 @@ class JobRunner:
                 session_failed = 0
                 session_forwarded = 0
 
+                chunk_live = {"found": 0, "failed": 0, "forwarded": 0}
+
                 async def on_update(event_type: str, data: dict) -> None:
+                    bump = False
+                    async with stats_lock:
+                        if event_type == "result_found":
+                            totals["found"] += 1
+                            chunk_live["found"] += 1
+                            bump = True
+                        elif event_type == "result_failed":
+                            totals["failed"] += 1
+                            chunk_live["failed"] += 1
+                            bump = True
+                        elif event_type == "forwarded":
+                            totals["forwarded"] += 1
+                            chunk_live["forwarded"] += 1
+                            bump = True
+
+                        if bump:
+                            await db.update_job_stats(
+                                job_id,
+                                found_count=totals["found"],
+                                failed_count=totals["failed"],
+                                forwarded_count=totals["forwarded"],
+                            )
+                            await self._emit(
+                                job_id,
+                                "stats_update",
+                                {
+                                    "found_count": totals["found"],
+                                    "failed_count": totals["failed"],
+                                    "forwarded_count": totals["forwarded"],
+                                    "completed_chunks": completed,
+                                    "total_chunks": job["total_chunks"],
+                                },
+                            )
                     await self._emit(job_id, event_type, {**data, "job_id": job_id})
 
                 processor = BotProcessor(
@@ -83,12 +118,16 @@ class JobRunner:
                     session_token=session.get("session_token") or "",
                     bot_username=job["bot_username"],
                     command=job["command"],
+                    target_group=job["target_group"],
                     on_update=on_update,
                 )
 
                 lock = session_manager.get_lock(session_id)
                 async with lock:
                     for chunk in sorted(session_chunks, key=lambda c: c["chunk_index"]):
+                        chunk_live["found"] = 0
+                        chunk_live["failed"] = 0
+                        chunk_live["forwarded"] = 0
                         await db.mark_chunk_started(chunk["id"])
                         await self._emit(
                             job_id,
@@ -101,9 +140,6 @@ class JobRunner:
                             },
                         )
 
-                        chunk_found = 0
-                        chunk_failed = 0
-                        chunk_forwarded = 0
                         found_dicts: list = []
                         failed_list: list = []
 
@@ -112,14 +148,9 @@ class JobRunner:
                             found_dicts = result["found"]
                             failed_list = result["failed"]
 
-                            parsed = [ParsedResult(**d) for d in found_dicts if d.get("cc")]
-                            chunk_forwarded = await processor.forward_results(parsed, job["target_group"])
-
-                            chunk_found = len(found_dicts)
-                            chunk_failed = len(failed_list)
-                            session_found += chunk_found
-                            session_failed += chunk_failed
-                            session_forwarded += chunk_forwarded
+                            session_found += chunk_live["found"]
+                            session_failed += chunk_live["failed"]
+                            session_forwarded += chunk_live["forwarded"]
 
                             await db.update_chunk(
                                 chunk["id"],
@@ -137,39 +168,30 @@ class JobRunner:
                                 status="failed",
                                 error=str(exc),
                             )
-                            chunk_failed = 1
+                            async with stats_lock:
+                                totals["failed"] += 1
+                                chunk_live["failed"] += 1
+                                await db.update_job_stats(
+                                    job_id,
+                                    failed_count=totals["failed"],
+                                )
+                                await self._emit(
+                                    job_id,
+                                    "stats_update",
+                                    {
+                                        "found_count": totals["found"],
+                                        "failed_count": totals["failed"],
+                                        "forwarded_count": totals["forwarded"],
+                                        "completed_chunks": completed,
+                                        "total_chunks": job["total_chunks"],
+                                    },
+                                )
                             session_failed += 1
 
                         async with stats_lock:
                             completed += 1
-                            totals["found"] += chunk_found
-                            totals["failed"] += chunk_failed
-                            totals["forwarded"] += chunk_forwarded
-                            await db.update_job_stats(
-                                job_id,
-                                completed_chunks=completed,
-                                found_count=totals["found"],
-                                failed_count=totals["failed"],
-                                forwarded_count=totals["forwarded"],
-                            )
+                            await db.update_job_stats(job_id, completed_chunks=completed)
 
-                        await self._emit(
-                            job_id,
-                            "stats_update",
-                            {
-                                "found_count": totals["found"],
-                                "failed_count": totals["failed"],
-                                "forwarded_count": totals["forwarded"],
-                                "completed_chunks": completed,
-                                "total_chunks": job["total_chunks"],
-                            },
-                        )
-                        if found_dicts:
-                            await self._emit(
-                                job_id,
-                                "results_found",
-                                {"results": found_dicts, "chunk_index": chunk["chunk_index"]},
-                            )
                         await self._emit(
                             job_id,
                             "chunk_done",
@@ -177,8 +199,9 @@ class JobRunner:
                                 "chunk_id": chunk["id"],
                                 "chunk_index": chunk["chunk_index"],
                                 "session_id": session_id,
-                                "chunk_found": chunk_found,
-                                "chunk_failed": chunk_failed,
+                                "chunk_found": chunk_live["found"],
+                                "chunk_failed": chunk_live["failed"],
+                                "chunk_forwarded": chunk_live["forwarded"],
                                 "found_count": totals["found"],
                                 "failed_count": totals["failed"],
                                 "forwarded_count": totals["forwarded"],

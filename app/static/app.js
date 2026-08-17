@@ -353,6 +353,7 @@ $("#btn-start").addEventListener("click", async () => {
   if (!$("#target-group").value) return notify("Enter target group", "warn");
 
   $("#log").innerHTML = "";
+  $("#live-feed").innerHTML = "";
   foundResults.length = 0;
   renderResultsList();
   setStatus("running");
@@ -417,11 +418,17 @@ function handleWsEvent(msg) {
       loadResultsFromChunks(data);
       break;
     case "stats_update":
-      updateStats(data);
+      updateStats(data, true);
+      break;
+    case "result_found":
+      addFoundResults([data.result]);
+      addLiveFeed(`✅ FOUND: ${data.result?.cc || "?"} — ${data.result?.status || ""}`, "found");
+      break;
+    case "result_failed":
+      addLiveFeed(`❌ FAILED: ${(data.text || "").slice(0, 80)}`, "failed");
       break;
     case "results_found":
       addFoundResults(data.results || []);
-      notify(`Found ${(data.results || []).length} result(s) in chunk ${data.chunk_index + 1}`, "success");
       break;
     case "job_started":
       setStatus("running");
@@ -442,7 +449,7 @@ function handleWsEvent(msg) {
       log(`AntiSpam — waiting ${data.wait}s (retry ${data.retry})`, "warn");
       break;
     case "forwarded":
-      log(`Forwarded CC: ${data.cc}`, "found");
+      addLiveFeed(`📤 FORWARDED: ${data.cc}`, "fwd");
       if (data.result) addFoundResults([data.result]);
       break;
     case "job_completed":
@@ -474,13 +481,45 @@ async function refreshJobStats() {
   } catch (_) {}
 }
 
-function updateStats(d) {
-  if (d.found_count != null) $("#stat-found").textContent = d.found_count;
-  else if (d.found != null) $("#stat-found").textContent = d.found;
-  if (d.failed_count != null) $("#stat-failed").textContent = d.failed_count;
-  else if (d.failed != null) $("#stat-failed").textContent = d.failed;
-  if (d.forwarded_count != null) $("#stat-forwarded").textContent = d.forwarded_count;
-  else if (d.forwarded != null) $("#stat-forwarded").textContent = d.forwarded;
+function addLiveFeed(text, cls) {
+  const feed = $("#live-feed");
+  const time = new Date().toLocaleTimeString();
+  const item = document.createElement("div");
+  item.className = `live-item ${cls}`;
+  item.textContent = `[${time}] ${text}`;
+  feed.prepend(item);
+  while (feed.children.length > 30) feed.lastChild.remove();
+}
+
+function pulseStat(id) {
+  const el = $(id);
+  el.classList.remove("pulse");
+  void el.offsetWidth;
+  el.classList.add("pulse");
+}
+
+function updateStats(d, pulse) {
+  if (d.found_count != null) {
+    $("#stat-found").textContent = d.found_count;
+    if (pulse) pulseStat("#stat-found");
+  } else if (d.found != null) {
+    $("#stat-found").textContent = d.found;
+    if (pulse) pulseStat("#stat-found");
+  }
+  if (d.failed_count != null) {
+    $("#stat-failed").textContent = d.failed_count;
+    if (pulse) pulseStat("#stat-failed");
+  } else if (d.failed != null) {
+    $("#stat-failed").textContent = d.failed;
+    if (pulse) pulseStat("#stat-failed");
+  }
+  if (d.forwarded_count != null) {
+    $("#stat-forwarded").textContent = d.forwarded_count;
+    if (pulse) pulseStat("#stat-forwarded");
+  } else if (d.forwarded != null) {
+    $("#stat-forwarded").textContent = d.forwarded;
+    if (pulse) pulseStat("#stat-forwarded");
+  }
   if (d.completed_chunks != null && d.total_chunks != null) {
     $("#stat-chunks").textContent = `${d.completed_chunks}/${d.total_chunks}`;
   }
