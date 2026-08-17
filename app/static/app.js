@@ -3,6 +3,68 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let ws = null;
 let currentJobId = null;
+const foundResults = [];
+
+function saveCurrentJob(id) {
+  if (id) localStorage.setItem("tgbt_current_job", String(id));
+  else localStorage.removeItem("tgbt_current_job");
+}
+
+function renderResultsList() {
+  const el = $("#results-list");
+  if (!foundResults.length) {
+    el.innerHTML = '<p class="empty-hint">Results appear here as they are found</p>';
+    return;
+  }
+  el.innerHTML = foundResults
+    .map((r) => {
+      const lines = [
+        `CC : ${esc(r.cc || "")}`,
+        `Status : ${esc(r.status || "")}`,
+        `Response : ${esc(r.response || "")}`,
+      ];
+      if (r.receipt) lines.push(`Receipt : ${esc(r.receipt)}`);
+      return `<div class="result-card valid">${lines.join("\n")}</div>`;
+    })
+    .join("");
+}
+
+function addFoundResults(results) {
+  for (const r of results) {
+    const key = r.cc || JSON.stringify(r);
+    if (!foundResults.some((x) => x.cc === r.cc && x.status === r.status)) {
+      foundResults.push(r);
+    }
+  }
+  renderResultsList();
+}
+
+function loadResultsFromChunks(chunks) {
+  foundResults.length = 0;
+  for (const ch of chunks || []) {
+    addFoundResults(ch.found_results || []);
+  }
+}
+
+async function restoreJobState() {
+  const saved = localStorage.getItem("tgbt_current_job");
+  if (!saved) return;
+  try {
+    const data = await api("GET", `/api/jobs/${saved}`);
+    currentJobId = data.job.id;
+    updateStats(data.job);
+    loadResultsFromChunks(data.chunks);
+    setStatus(data.job.status);
+    if (data.job.status === "running") {
+      connectWs(currentJobId);
+      notify(`Resumed watching job #${currentJobId}`, "info");
+    } else if (data.job.status === "completed") {
+      log(`Job #${currentJobId} completed — found: ${data.job.found_count}`, "found");
+    }
+  } catch (_) {
+    localStorage.removeItem("tgbt_current_job");
+  }
+}
 
 // Tabs
 $$(".tab").forEach((tab) => {
@@ -291,6 +353,8 @@ $("#btn-start").addEventListener("click", async () => {
   if (!$("#target-group").value) return notify("Enter target group", "warn");
 
   $("#log").innerHTML = "";
+  foundResults.length = 0;
+  renderResultsList();
   setStatus("running");
   resetStats();
 
@@ -303,6 +367,7 @@ $("#btn-start").addEventListener("click", async () => {
       session_ids: sessionIds,
     });
     currentJobId = res.job_id;
+    saveCurrentJob(currentJobId);
     notify(`Job #${currentJobId} started`, "success");
     log(`Job #${currentJobId} started`, "info");
     connectWs(currentJobId);
@@ -348,16 +413,29 @@ function handleWsEvent(msg) {
     case "snapshot":
       updateStats(data);
       break;
+    case "chunks":
+      loadResultsFromChunks(data);
+      break;
+    case "stats_update":
+      updateStats(data);
+      break;
+    case "results_found":
+      addFoundResults(data.results || []);
+      notify(`Found ${(data.results || []).length} result(s) in chunk ${data.chunk_index + 1}`, "success");
+      break;
     case "job_started":
       setStatus("running");
       log("Job running...", "info");
       break;
     case "chunk_started":
-      log(`Chunk ${data.chunk_index + 1} started on session #${data.session_id}`, "info");
+      log(`Chunk ${data.chunk_index + 1}/${data.total_chunks || "?"} started on session #${data.session_id}`, "info");
       break;
     case "chunk_done":
-      log(`Chunk ${data.chunk_index + 1} done — found: ${data.found}, failed: ${data.failed}`, "found");
-      refreshJobStats();
+      updateStats(data);
+      log(
+        `Chunk ${data.chunk_index + 1} done — +${data.chunk_found} found, +${data.chunk_failed} failed (${data.completed_chunks}/${data.total_chunks} total)`,
+        data.chunk_found ? "found" : "info"
+      );
       break;
     case "antispam":
       notify(`AntiSpam — waiting ${data.wait}s`, "warn");
@@ -365,10 +443,12 @@ function handleWsEvent(msg) {
       break;
     case "forwarded":
       log(`Forwarded CC: ${data.cc}`, "found");
+      if (data.result) addFoundResults([data.result]);
       break;
     case "job_completed":
       setStatus("completed");
       updateStats(data);
+      refreshJobStats();
       notify(`Job done — found: ${data.found}, forwarded: ${data.forwarded}`, "success");
       log(`Done — found: ${data.found}, failed: ${data.failed}, forwarded: ${data.forwarded}`, "found");
       break;
@@ -390,16 +470,17 @@ async function refreshJobStats() {
   try {
     const data = await api("GET", `/api/jobs/${currentJobId}`);
     updateStats(data.job);
+    loadResultsFromChunks(data.chunks);
   } catch (_) {}
 }
 
 function updateStats(d) {
-  if (d.found != null) $("#stat-found").textContent = d.found;
   if (d.found_count != null) $("#stat-found").textContent = d.found_count;
-  if (d.failed != null) $("#stat-failed").textContent = d.failed;
+  else if (d.found != null) $("#stat-found").textContent = d.found;
   if (d.failed_count != null) $("#stat-failed").textContent = d.failed_count;
-  if (d.forwarded != null) $("#stat-forwarded").textContent = d.forwarded;
+  else if (d.failed != null) $("#stat-failed").textContent = d.failed;
   if (d.forwarded_count != null) $("#stat-forwarded").textContent = d.forwarded_count;
+  else if (d.forwarded != null) $("#stat-forwarded").textContent = d.forwarded;
   if (d.completed_chunks != null && d.total_chunks != null) {
     $("#stat-chunks").textContent = `${d.completed_chunks}/${d.total_chunks}`;
   }
@@ -431,3 +512,4 @@ async function loadHistory() {
 // Init
 loadConfig();
 loadSessions();
+restoreJobState();

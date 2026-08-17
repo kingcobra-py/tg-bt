@@ -97,12 +97,15 @@ class JobRunner:
                                 "chunk_id": chunk["id"],
                                 "chunk_index": chunk["chunk_index"],
                                 "session_id": session_id,
+                                "total_chunks": job["total_chunks"],
                             },
                         )
 
                         chunk_found = 0
                         chunk_failed = 0
                         chunk_forwarded = 0
+                        found_dicts: list = []
+                        failed_list: list = []
 
                         try:
                             result = await processor.process_chunk(chunk["chunk_text"])
@@ -149,6 +152,24 @@ class JobRunner:
                                 failed_count=totals["failed"],
                                 forwarded_count=totals["forwarded"],
                             )
+
+                        await self._emit(
+                            job_id,
+                            "stats_update",
+                            {
+                                "found_count": totals["found"],
+                                "failed_count": totals["failed"],
+                                "forwarded_count": totals["forwarded"],
+                                "completed_chunks": completed,
+                                "total_chunks": job["total_chunks"],
+                            },
+                        )
+                        if found_dicts:
+                            await self._emit(
+                                job_id,
+                                "results_found",
+                                {"results": found_dicts, "chunk_index": chunk["chunk_index"]},
+                            )
                         await self._emit(
                             job_id,
                             "chunk_done",
@@ -156,8 +177,13 @@ class JobRunner:
                                 "chunk_id": chunk["id"],
                                 "chunk_index": chunk["chunk_index"],
                                 "session_id": session_id,
-                                "found": session_found,
-                                "failed": session_failed,
+                                "chunk_found": chunk_found,
+                                "chunk_failed": chunk_failed,
+                                "found_count": totals["found"],
+                                "failed_count": totals["failed"],
+                                "forwarded_count": totals["forwarded"],
+                                "completed_chunks": completed,
+                                "total_chunks": job["total_chunks"],
                             },
                         )
 
@@ -193,6 +219,11 @@ class JobRunner:
                     "found": total_found,
                     "failed": total_failed,
                     "forwarded": total_forwarded,
+                    "found_count": total_found,
+                    "failed_count": total_failed,
+                    "forwarded_count": total_forwarded,
+                    "completed_chunks": completed,
+                    "total_chunks": job["total_chunks"],
                 },
             )
 

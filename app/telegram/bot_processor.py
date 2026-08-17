@@ -3,8 +3,6 @@ import logging
 import time
 from collections.abc import Callable
 
-from telethon import events
-
 from app.config import settings
 from app.telegram.result_parser import (
     ParsedResult,
@@ -41,87 +39,73 @@ class BotProcessor:
             await self.on_update(event_type, data)
 
     async def process_chunk(self, chunk_text: str) -> dict:
-        """
-        Send command + chunk to bot, wait for completion marker.
-        Returns dict with result_text, found, failed, duration, error.
-        """
+        """Send command + chunk, collect all bot messages until completion marker."""
         start = time.monotonic()
         client = await session_manager.connect(self.session_id, self.filename, self.session_token)
         bot_entity = await client.get_entity(self.bot_username)
-
         message_body = f"{self.command}\n{chunk_text}" if self.command else chunk_text
         collected: list[str] = []
-        done = asyncio.Event()
-        error_msg = ""
-
-        @client.on(events.NewMessage(from_users=bot_entity))
-        async def handler(event):
-            nonlocal error_msg
-            text = event.message.message or ""
-            if not text:
-                return
-            collected.append(text)
-            await self._emit("message", {"text": text, "session_id": self.session_id})
-
-            if is_completion_message(text) or is_completion_message("\n".join(collected)):
-                done.set()
-
         retries = 0
+
         while retries <= settings.max_retries:
+            collected.clear()
             try:
-                collected.clear()
-                done.clear()
+                async with client.conversation(bot_entity, timeout=settings.bot_response_timeout) as conv:
+                    await conv.send_message(message_body)
+                    await self._emit("sent", {"session_id": self.session_id, "chars": len(message_body)})
 
-                await client.send_message(bot_entity, message_body)
-                await self._emit("sent", {"session_id": self.session_id, "chars": len(message_body)})
+                    while True:
+                        try:
+                            response = await conv.get_response(timeout=120)
+                        except asyncio.TimeoutError:
+                            full = "\n".join(collected)
+                            if collected and is_completion_message(full):
+                                break
+                            raise RuntimeError(
+                                f"Bot did not respond within timeout (session {self.session_id})"
+                            )
 
-                try:
-                    await asyncio.wait_for(done.wait(), timeout=settings.bot_response_timeout)
+                        text = response.text or ""
+                        if not text:
+                            continue
+
+                        collected.append(text)
+                        await self._emit("message", {"text": text, "session_id": self.session_id})
+
+                        is_spam, wait_secs = is_antispam_message(text)
+                        if is_spam:
+                            retries += 1
+                            await self._emit(
+                                "antispam",
+                                {"session_id": self.session_id, "wait": wait_secs, "retry": retries},
+                            )
+                            await asyncio.sleep(max(wait_secs, settings.antispam_wait_seconds))
+                            await conv.send_message(message_body)
+                            continue
+
+                        full = "\n".join(collected)
+                        if is_completion_message(text) or is_completion_message(full):
+                            break
+
+                full_text = "\n".join(collected)
+                if full_text and not is_antispam_message(full_text)[0]:
                     break
-                except asyncio.TimeoutError:
-                    full = "\n".join(collected)
-                    if collected:
-                        logger.warning("Timeout but got partial response for session %s", self.session_id)
-                        break
-                    raise RuntimeError(f"Bot did not respond within {settings.bot_response_timeout}s")
 
             except RuntimeError:
                 raise
             except Exception as exc:
-                full_check = "\n".join(collected)
-                is_spam, wait_secs = is_antispam_message(full_check)
-                if is_spam and retries < settings.max_retries:
+                logger.exception("Chunk processing error session %s", self.session_id)
+                if retries < settings.max_retries:
                     retries += 1
-                    await self._emit(
-                        "antispam",
-                        {"session_id": self.session_id, "wait": wait_secs, "retry": retries},
-                    )
-                    await asyncio.sleep(max(wait_secs, settings.antispam_wait_seconds))
+                    await asyncio.sleep(settings.antispam_wait_seconds)
                     continue
-                error_msg = str(exc)
-                raise
+                raise RuntimeError(str(exc)) from exc
+
+            retries += 1
 
         full_text = "\n".join(collected)
-
-        is_spam, wait_secs = is_antispam_message(full_text)
-        while is_spam and retries < settings.max_retries:
-            retries += 1
-            await self._emit(
-                "antispam",
-                {"session_id": self.session_id, "wait": wait_secs, "retry": retries},
-            )
-            await asyncio.sleep(max(wait_secs, settings.antispam_wait_seconds))
-            collected.clear()
-            done.clear()
-            await client.send_message(bot_entity, message_body)
-            try:
-                await asyncio.wait_for(done.wait(), timeout=settings.bot_response_timeout)
-            except asyncio.TimeoutError:
-                pass
-            full_text = "\n".join(collected)
-            is_spam, wait_secs = is_antispam_message(full_text)
-
-        client.remove_event_handler(handler)
+        if not full_text:
+            raise RuntimeError("Bot returned no response")
 
         valid, failed = parse_results(full_text)
         duration = time.monotonic() - start
@@ -131,7 +115,7 @@ class BotProcessor:
             "found": [r.to_dict() for r in valid],
             "failed": failed,
             "duration": round(duration, 2),
-            "error": error_msg,
+            "error": "",
         }
 
     async def forward_results(
@@ -159,7 +143,7 @@ class BotProcessor:
                 self.session_id, self.filename, target_group, msg, self.session_token
             )
             forwarded += 1
-            await self._emit("forwarded", {"session_id": self.session_id, "cc": result.cc})
+            await self._emit("forwarded", {"session_id": self.session_id, "cc": result.cc, "result": result.to_dict()})
             await asyncio.sleep(1)
 
         return forwarded

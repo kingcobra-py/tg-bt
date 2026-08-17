@@ -49,6 +49,9 @@ ANTISPAM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Raw input card lines echoed by bot — not failures
+INPUT_CARD_RE = re.compile(r"^\d{12,19}\|\d{1,2}\|\d{2,4}\|\d{3,4}$")
+
 
 @dataclass
 class ParsedResult:
@@ -122,6 +125,12 @@ def parse_results(text: str) -> tuple[list[ParsedResult], list[str]]:
             continue
 
         if ANTISPAM_RE.search(block):
+            continue
+
+        if INPUT_CARD_RE.match(block.replace(" ", "")):
+            continue
+
+        if block.lower().startswith("processing") or block.lower().startswith("please wait"):
             continue
 
         match = RESULT_BLOCK_RE.search(block)

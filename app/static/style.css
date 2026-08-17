@@ -140,6 +140,30 @@ select[multiple] { min-height: 80px; }
 .session-check-meta { font-size: 0.75rem; color: var(--muted); }
 .empty-hint { font-size: 0.8rem; color: var(--muted); margin: 0; }
 
+.results-heading {
+  font-size: 0.875rem;
+  margin: 1rem 0 0.5rem;
+  color: var(--muted);
+}
+.results-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.result-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.result-card.valid { border-color: var(--success); }
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
