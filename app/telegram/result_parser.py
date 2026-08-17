@@ -9,6 +9,7 @@ VALID_RESULT_MARKERS = (
     "charged",
     "declined",
     "approved",
+    "generic_decline",
     "incorrect_cvc",
     "insufficient_funds",
     "expired_card",
@@ -94,11 +95,10 @@ def _strip_block(block: str) -> str:
 
 
 def _split_blocks(text: str) -> list[str]:
-    parts = NUMBERED_BLOCK_RE.split(text)
-    blocks: list[str] = []
-    if parts and not NUMBERED_BLOCK_RE.search(text):
-        blocks.append(text)
-    else:
+    """Split bot output into individual result blocks."""
+    if NUMBERED_BLOCK_RE.search(text):
+        parts = NUMBERED_BLOCK_RE.split(text)
+        blocks: list[str] = []
         i = 0
         while i < len(parts):
             if re.match(r"\d+\=\"", parts[i]):
@@ -109,15 +109,19 @@ def _split_blocks(text: str) -> list[str]:
                 if parts[i].strip():
                     blocks.append(parts[i])
                 i += 1
-    if not blocks:
-        blocks = [text]
-    return blocks
+        return blocks if blocks else [text]
+
+    # Split on each new CC : block (blank line or direct CC start)
+    parts = re.split(r"(?:\n{2,}|(?=\nCC\s*:))", text)
+    blocks = [p.strip() for p in parts if p.strip()]
+    return blocks if blocks else [text]
 
 
 def parse_results(text: str) -> tuple[list[ParsedResult], list[str]]:
     """Parse bot response into valid results and failed/unmatched blocks."""
     valid: list[ParsedResult] = []
     failed: list[str] = []
+    seen_cc: set[str] = set()
 
     for raw_block in _split_blocks(text):
         block = _strip_block(raw_block)
@@ -133,21 +137,26 @@ def parse_results(text: str) -> tuple[list[ParsedResult], list[str]]:
         if block.lower().startswith("processing") or block.lower().startswith("please wait"):
             continue
 
-        match = RESULT_BLOCK_RE.search(block)
-        if match:
+        matched = False
+        for match in RESULT_BLOCK_RE.finditer(block):
+            matched = True
             result = ParsedResult(
                 cc=match.group("cc").strip(),
                 status=match.group("status").strip(),
                 response=match.group("response").strip(),
                 receipt=(match.group("receipt") or "").strip(),
-                raw=block,
+                raw=match.group(0),
             )
+            if result.cc in seen_cc:
+                continue
+            seen_cc.add(result.cc)
             if result.is_valid():
                 valid.append(result)
             else:
+                failed.append(match.group(0))
+        if not matched and "CC :" in block and "Status :" in block:
+            if block not in failed:
                 failed.append(block)
-        elif "CC :" in block or "Status :" in block:
-            failed.append(block)
 
     return valid, failed
 
