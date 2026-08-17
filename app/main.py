@@ -1,5 +1,6 @@
 import logging
 import re
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -325,9 +326,16 @@ async def job_ws(websocket: WebSocket, job_id: int):
         try:
             await websocket.send_json({"type": event_type, "data": data})
         except Exception:
-            pass
+            logger.debug("WS send failed for job %s event %s", job_id, event_type)
 
     job_runner.subscribe(job_id, listener)
+
+    async def ping_loop():
+        while True:
+            await asyncio.sleep(20)
+            await websocket.send_json({"type": "ping", "data": {}})
+
+    ping_task = asyncio.create_task(ping_loop())
     try:
         job = await db.get_job(job_id)
         if job:
@@ -335,12 +343,16 @@ async def job_ws(websocket: WebSocket, job_id: int):
             chunks = await db.get_job_chunks(job_id)
             await websocket.send_json({"type": "chunks", "data": chunks})
 
+        # Replay events that fired before this socket connected
+        await job_runner.replay_events(job_id, listener)
+
         while True:
             try:
                 await websocket.receive_text()
             except WebSocketDisconnect:
                 break
     finally:
+        ping_task.cancel()
         job_runner.unsubscribe(job_id, listener)
 
 

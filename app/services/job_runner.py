@@ -19,6 +19,8 @@ class JobRunner:
     def __init__(self) -> None:
         self._running: dict[int, asyncio.Task] = {}
         self._listeners: dict[int, list[Callable]] = defaultdict(list)
+        self._event_buffer: dict[int, list[tuple[str, dict]]] = defaultdict(list)
+        self._buffer_max = 500
 
     def subscribe(self, job_id: int, callback: Callable) -> None:
         self._listeners[job_id].append(callback)
@@ -27,7 +29,18 @@ class JobRunner:
         if callback in self._listeners[job_id]:
             self._listeners[job_id].remove(callback)
 
+    async def replay_events(self, job_id: int, callback: Callable) -> None:
+        for event_type, data in self._event_buffer.get(job_id, []):
+            try:
+                await callback(event_type, data)
+            except Exception:
+                logger.exception("Replay error for job %s", job_id)
+
     async def _emit(self, job_id: int, event_type: str, data: dict) -> None:
+        buf = self._event_buffer[job_id]
+        buf.append((event_type, data))
+        if len(buf) > self._buffer_max:
+            del buf[: len(buf) - self._buffer_max]
         for cb in self._listeners.get(job_id, []):
             try:
                 await cb(event_type, data)

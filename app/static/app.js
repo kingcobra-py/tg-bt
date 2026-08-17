@@ -3,6 +3,8 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let ws = null;
 let currentJobId = null;
+let wsIntentionalClose = false;
+let pollTimer = null;
 const foundResults = [];
 
 function saveCurrentJob(id) {
@@ -57,6 +59,7 @@ async function restoreJobState() {
     setStatus(data.job.status);
     if (data.job.status === "running") {
       connectWs(currentJobId);
+      startPolling(currentJobId);
       notify(`Resumed watching job #${currentJobId}`, "info");
     } else if (data.job.status === "completed") {
       log(`Job #${currentJobId} completed — found: ${data.job.found_count}`, "found");
@@ -392,18 +395,60 @@ function resetStats() {
   $("#stat-chunks").textContent = "0/0";
 }
 
+function startPolling(jobId) {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    if (!jobId) return;
+    try {
+      const data = await api("GET", `/api/jobs/${jobId}`);
+      updateStats(data.job);
+      loadResultsFromChunks(data.chunks);
+      setStatus(data.job.status);
+      if (data.job.status === "completed" || data.job.status === "failed") {
+        stopPolling();
+      }
+    } catch (_) {}
+  }, 2500);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
 function connectWs(jobId) {
+  wsIntentionalClose = true;
   if (ws) ws.close();
+  wsIntentionalClose = false;
+
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/jobs/${jobId}`);
 
+  ws.onopen = () => {
+    log(`Live connection open for job #${jobId}`, "info");
+    startPolling(jobId);
+  };
+
   ws.onmessage = (evt) => {
     const msg = JSON.parse(evt.data);
+    if (msg.type === "ping") return;
     handleWsEvent(msg);
   };
 
+  ws.onerror = () => {
+    log("WebSocket error — using poll fallback", "warn");
+  };
+
   ws.onclose = () => {
-    log("WebSocket closed", "warn");
+    if (wsIntentionalClose) return;
+    log("Live connection dropped — reconnecting...", "warn");
+    if (currentJobId === jobId) {
+      setTimeout(() => {
+        if (currentJobId === jobId) connectWs(jobId);
+      }, 2000);
+    }
   };
 }
 
