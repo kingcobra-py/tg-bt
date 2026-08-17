@@ -12,6 +12,7 @@ $$(".tab").forEach((tab) => {
     tab.classList.add("active");
     $(`#tab-${tab.dataset.tab}`).classList.add("active");
     if (tab.dataset.tab === "sessions") loadSessions();
+    if (tab.dataset.tab === "process") loadSessions();
     if (tab.dataset.tab === "history") loadHistory();
     if (tab.dataset.tab === "config") loadConfig();
   });
@@ -44,7 +45,8 @@ function notify(message, type = "info") {
 }
 
 function getSelectedSessions() {
-  return Array.from($("#session-select").selectedOptions).map((o) => parseInt(o.value));
+  return Array.from(document.querySelectorAll("#session-checkboxes input[type=checkbox]:checked"))
+    .map((cb) => parseInt(cb.value, 10));
 }
 
 async function api(method, path, body) {
@@ -134,8 +136,12 @@ async function loadSessions() {
     const sessions = await api("GET", "/api/sessions");
     const tbody = $("#sessions-table tbody");
     tbody.innerHTML = "";
-    const sel = $("#session-select");
-    sel.innerHTML = "";
+    const box = $("#session-checkboxes");
+    box.innerHTML = "";
+
+    if (!sessions.length) {
+      box.innerHTML = '<p class="empty-hint">No sessions yet — add them in the Sessions tab.</p>';
+    }
 
     sessions.forEach((s) => {
       const user = s.user?.username || s.user?.first_name || "—";
@@ -152,17 +158,28 @@ async function loadSessions() {
         <td><button class="btn danger" onclick="deleteSession(${s.id})">Remove</button></td>
       </tr>`;
 
-      if (s.connected) {
-        const opt = document.createElement("option");
-        opt.value = s.id;
-        opt.textContent = `${s.name} (${user})`;
-        sel.appendChild(opt);
-      }
+      const row = document.createElement("label");
+      row.className = `session-check ${s.connected ? "" : "disabled"}`;
+      row.innerHTML = `
+        <input type="checkbox" value="${s.id}" ${s.connected ? "" : "disabled"} />
+        <span class="session-check-label">
+          <strong>${esc(s.name)}</strong>
+          <span class="session-check-meta">${esc(user)} · ${esc(type)} · ${esc(statusTxt)}</span>
+        </span>`;
+      box.appendChild(row);
     });
   } catch (e) {
     notify("Session load failed: " + e.message, "error");
   }
 }
+
+$("#btn-select-all-sessions").addEventListener("click", () => {
+  document.querySelectorAll("#session-checkboxes input[type=checkbox]:not(:disabled)").forEach((cb) => {
+    cb.checked = true;
+  });
+  const count = getSelectedSessions().length;
+  notify(count ? `${count} session(s) selected` : "No connected sessions available", count ? "info" : "warn");
+});
 
 window.deleteSession = async (id) => {
   if (!confirm("Remove this session?")) return;
