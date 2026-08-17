@@ -4,24 +4,25 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
-# Markers that indicate a real bot result (checked in Status OR Response)
-VALID_RESULT_MARKERS = (
-    "charged",
-    "declined",
-    "approved",
+# Responses that match format but count as FAILED (not forwarded)
+FAILED_RESPONSE_MARKERS = (
     "generic_decline",
+    "your card was declined",
+    "card was declined",
+)
+
+# Responses that count as FOUND (valid hits — forwarded to group)
+VALID_RESPONSE_MARKERS = (
+    "charged",
+    "approved",
     "incorrect_cvc",
+    "invalid_cvc",
     "insufficient_funds",
     "expired_card",
     "incorrect_number",
-    "processing_error",
-    "card_declined",
-    "invalid_cvc",
-    "invalid_expiry",
     "authentication_required",
+    "invalid_expiry",
     "live",
-    "dead",
-    "error",
 )
 
 # Valid result block must contain CC, Status, Response
@@ -63,14 +64,22 @@ class ParsedResult:
     raw: str = ""
 
     def is_valid(self) -> bool:
+        """Valid = good hit to forward. Declined with generic_decline = NOT valid."""
         if not self.cc or not self.status or not self.response:
             return False
         cc_parts = self.cc.strip().split("|")
         if len(cc_parts) < 4:
             return False
-        # Valid when Status OR Response contains a known result marker (e.g. incorrect_cvc, charged)
+
+        response_lower = self.response.lower()
+
+        # Explicit failures — even with proper CC/Status/Response format
+        if any(marker in response_lower for marker in FAILED_RESPONSE_MARKERS):
+            return False
+
+        # Must match a valuable response code
         combined = f"{self.status} {self.response}".lower()
-        return any(marker in combined for marker in VALID_RESULT_MARKERS)
+        return any(marker in combined for marker in VALID_RESPONSE_MARKERS)
 
     def format_message(self) -> str:
         lines = [
