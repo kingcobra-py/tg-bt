@@ -63,6 +63,11 @@ class PhoneLoginVerify(BaseModel):
     password: str = ""
 
 
+class SessionTokenCreate(BaseModel):
+    name: str
+    token: str
+
+
 @app.get("/")
 async def index():
     return FileResponse("app/static/index.html")
@@ -121,9 +126,14 @@ async def list_sessions():
     for s in sessions:
         info = {**s}
         try:
-            me = await session_manager.get_me(s["id"], s["filename"])
+            me = await session_manager.get_me(
+                s["id"],
+                s.get("filename") or "",
+                s.get("session_token") or "",
+            )
             info["user"] = me
             info["connected"] = True
+            info["type"] = "token" if s.get("session_token") else "file"
         except Exception as exc:
             info["user"] = {}
             info["connected"] = False
@@ -157,6 +167,28 @@ async def upload_session(
         await db.delete_session(session_id)
         dest.unlink(missing_ok=True)
         raise HTTPException(400, f"Session invalid: {exc}") from exc
+
+
+@app.post("/api/sessions/token")
+async def add_session_token(body: SessionTokenCreate):
+    if not settings.telegram_api_id or not settings.telegram_api_hash:
+        raise HTTPException(400, "Set TELEGRAM_API_ID and TELEGRAM_API_HASH first")
+    if not body.token.strip():
+        raise HTTPException(400, "Session token is empty")
+
+    safe_name = re.sub(r"[^\w\-]", "_", body.name)
+    try:
+        user_info = await session_manager.validate_string_token(body.token)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid token: {exc}") from exc
+
+    session_id = await db.add_session(
+        name=safe_name,
+        filename="",
+        phone=user_info.get("phone", ""),
+        session_token=body.token.strip(),
+    )
+    return {"id": session_id, "name": safe_name, "user": user_info, "type": "token"}
 
 
 @app.post("/api/sessions/login/start")
@@ -198,10 +230,11 @@ async def remove_session(session_id: int):
         raise HTTPException(404, "Session not found")
 
     await session_manager.disconnect(session_id)
-    filepath = settings.session_dir / session["filename"]
-    filepath.unlink(missing_ok=True)
-    journal = Path(str(filepath) + "-journal")
-    journal.unlink(missing_ok=True)
+    if session.get("filename"):
+        filepath = settings.session_dir / session["filename"]
+        filepath.unlink(missing_ok=True)
+        journal = Path(str(filepath) + "-journal")
+        journal.unlink(missing_ok=True)
     await db.delete_session(session_id)
     return {"ok": True}
 

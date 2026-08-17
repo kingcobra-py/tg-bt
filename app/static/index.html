@@ -61,13 +61,25 @@
     <section id="tab-sessions" class="panel">
       <div class="grid-2">
         <div class="card">
-          <h2>Upload Session</h2>
+          <h2>Paste Session Token</h2>
+          <form id="token-form">
+            <label>Session Name <input id="token-name" type="text" required placeholder="acc1" /></label>
+            <label>String Session Token
+              <textarea id="token-value" rows="5" required placeholder="Paste your Telethon string session token here (starts with 1...)"></textarea>
+            </label>
+            <button type="submit" class="btn primary">Add Token</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Upload Session File</h2>
           <form id="upload-form">
-            <label>Session Name <input id="upload-name" type="text" required placeholder="acc1" /></label>
+            <label>Session Name <input id="upload-name" type="text" required placeholder="acc2" /></label>
             <label>Session File (.session) <input id="upload-file" type="file" accept=".session" required /></label>
             <button type="submit" class="btn primary">Upload</button>
           </form>
         </div>
+      </div>
+      <div class="grid-2">
         <div class="card">
           <h2>Phone Login</h2>
           <form id="login-form">
@@ -83,7 +95,7 @@
         <h2>Active Sessions</h2>
         <table id="sessions-table">
           <thead>
-            <tr><th>ID</th><th>Name</th><th>User</th><th>Phone</th><th>Status</th><th></th></tr>
+            <tr><th>ID</th><th>Name</th><th>Type</th><th>User</th><th>Phone</th><th>Status</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>

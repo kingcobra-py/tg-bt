@@ -79,7 +79,8 @@ class JobRunner:
 
                 processor = BotProcessor(
                     session_id=session_id,
-                    filename=session["filename"],
+                    filename=session.get("filename") or "",
+                    session_token=session.get("session_token") or "",
                     bot_username=job["bot_username"],
                     command=job["command"],
                     on_update=on_update,

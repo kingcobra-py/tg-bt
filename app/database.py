@@ -16,8 +16,9 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                filename TEXT NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
                 phone TEXT DEFAULT '',
+                session_token TEXT DEFAULT '',
                 enabled INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT (datetime('now'))
             );
@@ -64,6 +65,11 @@ async def init_db() -> None:
             """
         )
         await db.commit()
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN session_token TEXT DEFAULT ''")
+            await db.commit()
+        except Exception:
+            pass
 
 
 async def get_config(key: str, default: str = "") -> str:
@@ -91,11 +97,11 @@ async def list_sessions() -> list[dict]:
             return [dict(r) for r in rows]
 
 
-async def add_session(name: str, filename: str, phone: str = "") -> int:
+async def add_session(name: str, filename: str = "", phone: str = "", session_token: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "INSERT INTO sessions (name, filename, phone) VALUES (?, ?, ?)",
-            (name, filename, phone),
+            "INSERT INTO sessions (name, filename, phone, session_token) VALUES (?, ?, ?, ?)",
+            (name, filename, phone, session_token),
         )
         await db.commit()
         return cur.lastrowid

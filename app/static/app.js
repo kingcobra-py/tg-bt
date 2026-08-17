@@ -102,11 +102,13 @@ async function loadSessions() {
 
     sessions.forEach((s) => {
       const user = s.user?.username || s.user?.first_name || "—";
+      const type = s.type || (s.session_token ? "token" : "file");
       const statusCls = s.connected ? "connected" : "disconnected";
       const statusTxt = s.connected ? "Connected" : (s.error || "Disconnected");
       tbody.innerHTML += `<tr>
         <td>${s.id}</td>
         <td>${esc(s.name)}</td>
+        <td>${esc(type)}</td>
         <td>${esc(user)}</td>
         <td>${esc(s.phone || s.user?.phone || "—")}</td>
         <td class="${statusCls}">${esc(statusTxt)}</td>
@@ -134,6 +136,21 @@ window.deleteSession = async (id) => {
     alert(e.message);
   }
 };
+
+$("#token-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const res = await api("POST", "/api/sessions/token", {
+      name: $("#token-name").value,
+      token: $("#token-value").value.trim(),
+    });
+    log(`Token session added: ${res.name} (@${res.user?.username || "?"})`, "found");
+    $("#token-form").reset();
+    loadSessions();
+  } catch (e) {
+    alert(e.message);
+  }
+});
 
 $("#upload-form").addEventListener("submit", async (e) => {
   e.preventDefault();

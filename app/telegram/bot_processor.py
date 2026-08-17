@@ -27,9 +27,11 @@ class BotProcessor:
         bot_username: str,
         command: str,
         on_update: Callable | None = None,
+        session_token: str = "",
     ) -> None:
         self.session_id = session_id
         self.filename = filename
+        self.session_token = session_token
         self.bot_username = bot_username.lstrip("@")
         self.command = command
         self.on_update = on_update
@@ -44,7 +46,7 @@ class BotProcessor:
         Returns dict with result_text, found, failed, duration, error.
         """
         start = time.monotonic()
-        client = await session_manager.connect(self.session_id, self.filename)
+        client = await session_manager.connect(self.session_id, self.filename, self.session_token)
         bot_entity = await client.get_entity(self.bot_username)
 
         message_body = f"{self.command}\n{chunk_text}" if self.command else chunk_text
@@ -153,7 +155,9 @@ class BotProcessor:
                 continue
 
             msg = result.format_message()
-            await session_manager.send_to_group(self.session_id, self.filename, target_group, msg)
+            await session_manager.send_to_group(
+                self.session_id, self.filename, target_group, msg, self.session_token
+            )
             forwarded += 1
             await self._emit("forwarded", {"session_id": self.session_id, "cc": result.cc})
             await asyncio.sleep(1)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
+from telethon.sessions import StringSession
 
 from app.config import settings
 
@@ -21,22 +22,33 @@ class SessionManager:
     def _session_path(self, filename: str) -> Path:
         return settings.session_dir / filename
 
-    async def connect(self, session_id: int, filename: str) -> TelegramClient:
+    def _make_client(self, filename: str = "", session_token: str = "") -> TelegramClient:
+        if not settings.telegram_api_id or not settings.telegram_api_hash:
+            raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
+        if session_token:
+            return TelegramClient(
+                StringSession(session_token.strip()),
+                settings.telegram_api_id,
+                settings.telegram_api_hash,
+            )
+        session_path = str(self._session_path(filename).with_suffix(""))
+        return TelegramClient(session_path, settings.telegram_api_id, settings.telegram_api_hash)
+
+    async def connect(self, session_id: int, filename: str = "", session_token: str = "") -> TelegramClient:
         if session_id in self._clients:
             client = self._clients[session_id]
             if client.is_connected():
                 return client
 
-        if not settings.telegram_api_id or not settings.telegram_api_hash:
-            raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
+        if not filename and not session_token:
+            raise RuntimeError("Session has no file or token")
 
-        session_path = str(self._session_path(filename).with_suffix(""))
-        client = TelegramClient(session_path, settings.telegram_api_id, settings.telegram_api_hash)
+        client = self._make_client(filename, session_token)
         await client.connect()
 
         if not await client.is_user_authorized():
             await client.disconnect()
-            raise RuntimeError(f"Session {filename} is not authorized. Re-upload a valid .session file.")
+            raise RuntimeError("Session is not authorized. Provide a valid .session file or string token.")
 
         self._clients[session_id] = client
         if session_id not in self._locks:
@@ -57,8 +69,8 @@ class SessionManager:
         for sid in list(self._clients.keys()):
             await self.disconnect(sid)
 
-    async def get_me(self, session_id: int, filename: str) -> dict:
-        client = await self.connect(session_id, filename)
+    async def get_me(self, session_id: int, filename: str = "", session_token: str = "") -> dict:
+        client = await self.connect(session_id, filename, session_token)
         me = await client.get_me()
         return {
             "id": me.id,
@@ -67,18 +79,42 @@ class SessionManager:
             "first_name": me.first_name or "",
         }
 
-    async def send_to_bot(self, session_id: int, filename: str, bot_username: str, message: str) -> int:
-        client = await self.connect(session_id, filename)
+    async def send_to_bot(
+        self, session_id: int, filename: str, bot_username: str, message: str, session_token: str = ""
+    ) -> int:
+        client = await self.connect(session_id, filename, session_token)
         bot = bot_username.lstrip("@")
         entity = await client.get_entity(bot)
         sent = await client.send_message(entity, message)
         return sent.id
 
-    async def send_to_group(self, session_id: int, filename: str, group: str, message: str) -> None:
-        client = await self.connect(session_id, filename)
+    async def send_to_group(
+        self, session_id: int, filename: str, group: str, message: str, session_token: str = ""
+    ) -> None:
+        client = await self.connect(session_id, filename, session_token)
         target = group.lstrip("@")
         entity = await client.get_entity(target)
         await client.send_message(entity, message)
+
+    async def validate_string_token(self, token: str) -> dict:
+        """Validate a Telethon string session token and return user info."""
+        token = token.strip()
+        if not token:
+            raise ValueError("Session token is empty")
+        client = self._make_client(session_token=token)
+        await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise RuntimeError("Token is not authorized")
+            me = await client.get_me()
+            return {
+                "id": me.id,
+                "username": me.username or "",
+                "phone": me.phone or "",
+                "first_name": me.first_name or "",
+            }
+        finally:
+            await client.disconnect()
 
     async def send_login_code(self, name: str, phone: str) -> str:
         """Send OTP to phone. Returns session filename key."""
