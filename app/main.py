@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app import database as db
 from app.config import settings
+from app.config_store import load_settings, save_settings
 from app.services.job_runner import job_runner
 from app.telegram.session_manager import session_manager
 
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     settings.session_dir.mkdir(parents=True, exist_ok=True)
     Path("./data").mkdir(parents=True, exist_ok=True)
     await db.init_db()
+    await load_settings()
     yield
     await session_manager.disconnect_all()
 
@@ -75,9 +77,10 @@ async def index():
 
 @app.get("/api/config")
 async def get_config():
+    hash_saved = bool(settings.telegram_api_hash) or bool(await db.get_config("telegram_api_hash", ""))
     return {
         "telegram_api_id": settings.telegram_api_id,
-        "telegram_api_hash": "***" if settings.telegram_api_hash else "",
+        "telegram_api_hash_set": hash_saved,
         "lines_per_chunk": settings.lines_per_chunk,
         "antispam_wait_seconds": settings.antispam_wait_seconds,
         "bot_response_timeout": settings.bot_response_timeout,
@@ -90,21 +93,30 @@ async def get_config():
 
 @app.post("/api/config")
 async def update_config(body: ConfigUpdate):
+    updates: dict = {}
     if body.telegram_api_id is not None:
-        settings.telegram_api_id = body.telegram_api_id
-        await db.set_config("telegram_api_id", str(body.telegram_api_id))
-    if body.telegram_api_hash is not None:
-        settings.telegram_api_hash = body.telegram_api_hash
-        await db.set_config("telegram_api_hash", body.telegram_api_hash)
+        updates["telegram_api_id"] = body.telegram_api_id
+    if body.telegram_api_hash is not None and body.telegram_api_hash.strip():
+        updates["telegram_api_hash"] = body.telegram_api_hash.strip()
     if body.lines_per_chunk is not None:
-        settings.lines_per_chunk = body.lines_per_chunk
+        updates["lines_per_chunk"] = body.lines_per_chunk
     if body.antispam_wait_seconds is not None:
-        settings.antispam_wait_seconds = body.antispam_wait_seconds
+        updates["antispam_wait_seconds"] = body.antispam_wait_seconds
     if body.bot_response_timeout is not None:
-        settings.bot_response_timeout = body.bot_response_timeout
+        updates["bot_response_timeout"] = body.bot_response_timeout
     if body.max_retries is not None:
-        settings.max_retries = body.max_retries
-    return {"ok": True}
+        updates["max_retries"] = body.max_retries
+
+    if not updates:
+        raise HTTPException(400, "No settings to save")
+
+    await save_settings(updates)
+    return {
+        "ok": True,
+        "message": "Config saved successfully",
+        "telegram_api_id": settings.telegram_api_id,
+        "telegram_api_hash_set": bool(settings.telegram_api_hash),
+    }
 
 
 @app.post("/api/config/defaults")
@@ -116,7 +128,7 @@ async def set_defaults(
     await db.set_config("default_bot", default_bot)
     await db.set_config("default_command", default_command)
     await db.set_config("default_group", default_group)
-    return {"ok": True}
+    return {"ok": True, "message": "Defaults saved successfully"}
 
 
 @app.get("/api/sessions")

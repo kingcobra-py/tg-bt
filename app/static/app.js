@@ -30,6 +30,19 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function notify(message, type = "info") {
+  const container = $("#toasts");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("show"));
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => toast.remove(), 300);
+  }, 4500);
+}
+
 function getSelectedSessions() {
   return Array.from($("#session-select").selectedOptions).map((o) => parseInt(o.value));
 }
@@ -54,6 +67,14 @@ async function loadConfig() {
     const cfg = await api("GET", "/api/config");
     $("#cfg-api-id").value = cfg.telegram_api_id || "";
     $("#cfg-api-hash").value = "";
+    const hint = $("#cfg-hash-hint");
+    if (cfg.telegram_api_hash_set) {
+      hint.textContent = "✓ API Hash saved (leave blank to keep current)";
+      $("#cfg-api-hash").placeholder = "Leave blank to keep saved hash";
+    } else {
+      hint.textContent = "";
+      $("#cfg-api-hash").placeholder = "Enter API Hash";
+    }
     $("#cfg-lines").value = cfg.lines_per_chunk;
     $("#cfg-antispam").value = cfg.antispam_wait_seconds;
     $("#cfg-timeout").value = cfg.bot_response_timeout;
@@ -65,28 +86,44 @@ async function loadConfig() {
     $("#command").value = cfg.default_command || "";
     $("#target-group").value = cfg.default_group || "";
   } catch (e) {
-    log("Config load failed: " + e.message, "failed");
+    notify("Config load failed: " + e.message, "error");
   }
 }
 
 $("#config-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const apiId = $("#cfg-api-id").value.trim();
+  const apiHash = $("#cfg-api-hash").value.trim();
+  if (!apiId) {
+    notify("API ID is required", "error");
+    return;
+  }
+  if (!apiHash && !$("#cfg-hash-hint").textContent) {
+    notify("API Hash is required", "error");
+    return;
+  }
   try {
-    await api("POST", "/api/config", {
-      telegram_api_id: parseInt($("#cfg-api-id").value) || undefined,
-      telegram_api_hash: $("#cfg-api-hash").value || undefined,
+    const payload = {
+      telegram_api_id: parseInt(apiId),
       lines_per_chunk: parseInt($("#cfg-lines").value),
       antispam_wait_seconds: parseInt($("#cfg-antispam").value),
       bot_response_timeout: parseInt($("#cfg-timeout").value),
       max_retries: parseInt($("#cfg-retries").value),
-    });
+    };
+    if (apiHash) payload.telegram_api_hash = apiHash;
+
+    const res = await api("POST", "/api/config", payload);
     const fd = new FormData();
     fd.append("default_bot", $("#cfg-default-bot").value);
     fd.append("default_command", $("#cfg-default-cmd").value);
     fd.append("default_group", $("#cfg-default-group").value);
     await api("POST", "/api/config/defaults", fd);
+
+    notify(res.message || "Config saved successfully", "success");
     log("Config saved", "found");
+    await loadConfig();
   } catch (e) {
+    notify("Config save failed: " + e.message, "error");
     log("Config save failed: " + e.message, "failed");
   }
 });
@@ -123,7 +160,7 @@ async function loadSessions() {
       }
     });
   } catch (e) {
-    log("Session load failed: " + e.message, "failed");
+    notify("Session load failed: " + e.message, "error");
   }
 }
 
@@ -131,9 +168,10 @@ window.deleteSession = async (id) => {
   if (!confirm("Remove this session?")) return;
   try {
     await api("DELETE", `/api/sessions/${id}`);
+    notify("Session removed", "success");
     loadSessions();
   } catch (e) {
-    alert(e.message);
+    notify(e.message, "error");
   }
 };
 
@@ -144,11 +182,12 @@ $("#token-form").addEventListener("submit", async (e) => {
       name: $("#token-name").value,
       token: $("#token-value").value.trim(),
     });
+    notify(`Session added: ${res.name} (@${res.user?.username || "?"})`, "success");
     log(`Token session added: ${res.name} (@${res.user?.username || "?"})`, "found");
     $("#token-form").reset();
     loadSessions();
   } catch (e) {
-    alert(e.message);
+    notify(e.message, "error");
   }
 });
 
@@ -159,11 +198,12 @@ $("#upload-form").addEventListener("submit", async (e) => {
   fd.append("file", $("#upload-file").files[0]);
   try {
     const res = await api("POST", "/api/sessions/upload", fd);
+    notify(`Session uploaded: ${res.name}`, "success");
     log(`Session uploaded: ${res.name} (@${res.user?.username || "?"})`, "found");
     $("#upload-form").reset();
     loadSessions();
   } catch (e) {
-    alert(e.message);
+    notify(e.message, "error");
   }
 });
 
@@ -177,16 +217,17 @@ $("#login-form").addEventListener("submit", async (e) => {
   try {
     if (!code) {
       await api("POST", "/api/sessions/login/start", { name, phone });
+      notify("Login code sent to " + phone, "info");
       log("Login code sent to " + phone, "info");
-      alert("Code sent! Enter the code and click Login / Verify again.");
       return;
     }
     const res = await api("POST", "/api/sessions/login/verify", { name, phone, code, password });
+    notify(`Logged in: ${res.name} (@${res.user?.username || "?"})`, "success");
     log(`Logged in: ${res.name} (@${res.user?.username || "?"})`, "found");
     $("#login-form").reset();
     loadSessions();
   } catch (e) {
-    alert(e.message);
+    notify(e.message, "error");
   }
 });
 
@@ -194,8 +235,8 @@ $("#login-form").addEventListener("submit", async (e) => {
 $("#btn-preview").addEventListener("click", async () => {
   const text = $("#input-text").value;
   const sessionIds = getSelectedSessions();
-  if (!text.trim()) return alert("Enter text first");
-  if (!sessionIds.length) return alert("Select at least one session");
+  if (!text.trim()) return notify("Enter text first", "warn");
+  if (!sessionIds.length) return notify("Select at least one session", "warn");
 
   try {
     const preview = await api("POST", "/api/jobs/preview", {
@@ -217,8 +258,9 @@ $("#btn-preview").addEventListener("click", async () => {
       html += `Session #${sid}: ${count} chunks &nbsp;`;
     }
     box.innerHTML = html;
+    notify(`Preview: ${preview.total_chunks} chunks from ${preview.total_lines} lines`, "info");
   } catch (e) {
-    alert(e.message);
+    notify(e.message, "error");
   }
 });
 
@@ -226,10 +268,10 @@ $("#btn-preview").addEventListener("click", async () => {
 $("#btn-start").addEventListener("click", async () => {
   const text = $("#input-text").value;
   const sessionIds = getSelectedSessions();
-  if (!text.trim()) return alert("Enter text");
-  if (!sessionIds.length) return alert("Select sessions");
-  if (!$("#bot-username").value) return alert("Enter bot username");
-  if (!$("#target-group").value) return alert("Enter target group");
+  if (!text.trim()) return notify("Enter text", "warn");
+  if (!sessionIds.length) return notify("Select sessions", "warn");
+  if (!$("#bot-username").value) return notify("Enter bot username", "warn");
+  if (!$("#target-group").value) return notify("Enter target group", "warn");
 
   $("#log").innerHTML = "";
   setStatus("running");
@@ -244,9 +286,11 @@ $("#btn-start").addEventListener("click", async () => {
       session_ids: sessionIds,
     });
     currentJobId = res.job_id;
+    notify(`Job #${currentJobId} started`, "success");
     log(`Job #${currentJobId} started`, "info");
     connectWs(currentJobId);
   } catch (e) {
+    notify("Start failed: " + e.message, "error");
     log("Start failed: " + e.message, "failed");
     setStatus("failed");
   }
@@ -299,6 +343,7 @@ function handleWsEvent(msg) {
       refreshJobStats();
       break;
     case "antispam":
+      notify(`AntiSpam — waiting ${data.wait}s`, "warn");
       log(`AntiSpam — waiting ${data.wait}s (retry ${data.retry})`, "warn");
       break;
     case "forwarded":
@@ -307,10 +352,12 @@ function handleWsEvent(msg) {
     case "job_completed":
       setStatus("completed");
       updateStats(data);
+      notify(`Job done — found: ${data.found}, forwarded: ${data.forwarded}`, "success");
       log(`Done — found: ${data.found}, failed: ${data.failed}, forwarded: ${data.forwarded}`, "found");
       break;
     case "job_failed":
       setStatus("failed");
+      notify("Job failed: " + (data.error || "unknown"), "error");
       log("Job failed: " + (data.error || "unknown"), "failed");
       break;
     case "message":

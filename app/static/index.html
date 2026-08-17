@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <header>
     <h1>TG-BT</h1>
     <p>Multi-session Telegram bot processor</p>
@@ -109,7 +110,10 @@
         <form id="config-form">
           <div class="row">
             <label>API ID <input id="cfg-api-id" type="number" /></label>
-            <label>API Hash <input id="cfg-api-hash" type="text" /></label>
+            <label>API Hash
+              <input id="cfg-api-hash" type="password" autocomplete="new-password" placeholder="Enter API Hash" />
+              <small id="cfg-hash-hint" class="field-hint"></small>
+            </label>
           </div>
           <div class="row">
             <label>Lines per Chunk <input id="cfg-lines" type="number" min="1" max="100" value="15" /></label>
