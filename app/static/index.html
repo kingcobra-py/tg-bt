@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TG-BT — Multi-Session Bot Manager</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>TG-BT</h1>
+    <p>Multi-session Telegram bot processor</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="process">Process</button>
+    <button class="tab" data-tab="sessions">Sessions</button>
+    <button class="tab" data-tab="config">Config</button>
+    <button class="tab" data-tab="history">History</button>
+  </nav>
+
+  <main>
+    <!-- PROCESS TAB -->
+    <section id="tab-process" class="panel active">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Input Text</h2>
+          <textarea id="input-text" rows="16" placeholder="Paste your text here. It will be split into 15-line chunks and distributed across selected sessions."></textarea>
+          <div class="row">
+            <label>Bot Username <input id="bot-username" type="text" placeholder="@YourBot" /></label>
+            <label>Command <input id="command" type="text" placeholder="/chk or /mass" /></label>
+            <label>Target Group <input id="target-group" type="text" placeholder="@results_group" /></label>
+          </div>
+          <div class="row">
+            <label>Sessions
+              <select id="session-select" multiple size="4"></select>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="btn-preview" class="btn secondary">Preview Split</button>
+            <button id="btn-start" class="btn primary">Start Processing</button>
+          </div>
+          <div id="preview-box" class="preview hidden"></div>
+        </div>
+
+        <div class="card">
+          <h2>Live Status</h2>
+          <div class="stats-grid">
+            <div class="stat"><span class="stat-val" id="stat-found">0</span><span class="stat-label">Found</span></div>
+            <div class="stat"><span class="stat-val" id="stat-failed">0</span><span class="stat-label">Failed</span></div>
+            <div class="stat"><span class="stat-val" id="stat-forwarded">0</span><span class="stat-label">Forwarded</span></div>
+            <div class="stat"><span class="stat-val" id="stat-chunks">0/0</span><span class="stat-label">Chunks</span></div>
+          </div>
+          <div id="job-status" class="status-badge idle">Idle</div>
+          <div id="log" class="log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SESSIONS TAB -->
+    <section id="tab-sessions" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Upload Session</h2>
+          <form id="upload-form">
+            <label>Session Name <input id="upload-name" type="text" required placeholder="acc1" /></label>
+            <label>Session File (.session) <input id="upload-file" type="file" accept=".session" required /></label>
+            <button type="submit" class="btn primary">Upload</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Phone Login</h2>
+          <form id="login-form">
+            <label>Name <input id="login-name" type="text" required placeholder="acc2" /></label>
+            <label>Phone <input id="login-phone" type="text" required placeholder="+1234567890" /></label>
+            <label>Code <input id="login-code" type="text" placeholder="12345" /></label>
+            <label>2FA Password <input id="login-password" type="password" placeholder="Optional" /></label>
+            <button type="submit" class="btn primary">Login / Verify</button>
+          </form>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Active Sessions</h2>
+        <table id="sessions-table">
+          <thead>
+            <tr><th>ID</th><th>Name</th><th>User</th><th>Phone</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- CONFIG TAB -->
+    <section id="tab-config" class="panel">
+      <div class="card">
+        <h2>Telegram API</h2>
+        <form id="config-form">
+          <div class="row">
+            <label>API ID <input id="cfg-api-id" type="number" /></label>
+            <label>API Hash <input id="cfg-api-hash" type="text" /></label>
+          </div>
+          <div class="row">
+            <label>Lines per Chunk <input id="cfg-lines" type="number" min="1" max="100" value="15" /></label>
+            <label>AntiSpam Wait (s) <input id="cfg-antispam" type="number" min="1" max="60" value="3" /></label>
+            <label>Bot Timeout (s) <input id="cfg-timeout" type="number" min="30" max="600" value="300" /></label>
+            <label>Max Retries <input id="cfg-retries" type="number" min="1" max="50" value="10" /></label>
+          </div>
+          <h3>Defaults</h3>
+          <div class="row">
+            <label>Default Bot <input id="cfg-default-bot" type="text" /></label>
+            <label>Default Command <input id="cfg-default-cmd" type="text" /></label>
+            <label>Default Group <input id="cfg-default-group" type="text" /></label>
+          </div>
+          <button type="submit" class="btn primary">Save Config</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- HISTORY TAB -->
+    <section id="tab-history" class="panel">
+      <div class="card">
+        <h2>Job History</h2>
+        <table id="history-table">
+          <thead>
+            <tr><th>ID</th><th>Status</th><th>Bot</th><th>Chunks</th><th>Found</th><th>Failed</th><th>Forwarded</th><th>Created</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
