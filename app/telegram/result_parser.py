@@ -9,6 +9,7 @@ FAILED_RESPONSE_MARKERS = (
     "generic_decline",
     "your card was declined",
     "card was declined",
+    "fraudulent",
 )
 
 # Responses that count as FOUND (valid hits — forwarded to group)
