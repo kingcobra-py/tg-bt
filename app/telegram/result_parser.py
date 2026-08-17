@@ -4,6 +4,25 @@ from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
 
+# Markers that indicate a real bot result (checked in Status OR Response)
+VALID_RESULT_MARKERS = (
+    "charged",
+    "declined",
+    "approved",
+    "incorrect_cvc",
+    "insufficient_funds",
+    "expired_card",
+    "incorrect_number",
+    "processing_error",
+    "card_declined",
+    "invalid_cvc",
+    "invalid_expiry",
+    "authentication_required",
+    "live",
+    "dead",
+    "error",
+)
+
 # Valid result block must contain CC, Status, Response
 RESULT_BLOCK_RE = re.compile(
     r"CC\s*:\s*(?P<cc>[^\n]+)\s*\n"
@@ -45,9 +64,9 @@ class ParsedResult:
         cc_parts = self.cc.strip().split("|")
         if len(cc_parts) < 4:
             return False
-        status_lower = self.status.lower()
-        valid_statuses = ("charged", "declined", "approved", "live", "dead", "error")
-        return any(s in status_lower for s in valid_statuses)
+        # Valid when Status OR Response contains a known result marker (e.g. incorrect_cvc, charged)
+        combined = f"{self.status} {self.response}".lower()
+        return any(marker in combined for marker in VALID_RESULT_MARKERS)
 
     def format_message(self) -> str:
         lines = [
