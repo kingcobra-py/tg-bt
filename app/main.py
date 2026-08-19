@@ -304,6 +304,19 @@ async def create_job(body: JobCreate):
     return {"job_id": job_id}
 
 
+@app.post("/api/jobs/{job_id}/stop")
+async def stop_job(job_id: int):
+    job = await db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job["status"] not in ("running", "pending"):
+        raise HTTPException(400, f"Job is already {job['status']}")
+    stopped = await job_runner.stop_job(job_id)
+    if not stopped:
+        raise HTTPException(400, "Job is not running")
+    return {"ok": True, "job_id": job_id, "message": "Stop requested. Processing will halt."}
+
+
 @app.get("/api/jobs")
 async def list_jobs():
     return await db.list_jobs()
@@ -331,9 +344,12 @@ async def job_ws(websocket: WebSocket, job_id: int):
     job_runner.subscribe(job_id, listener)
 
     async def ping_loop():
-        while True:
-            await asyncio.sleep(20)
-            await websocket.send_json({"type": "ping", "data": {}})
+        try:
+            while True:
+                await asyncio.sleep(20)
+                await websocket.send_json({"type": "ping", "data": {}})
+        except (asyncio.CancelledError, Exception):
+            pass
 
     ping_task = asyncio.create_task(ping_loop())
     try:

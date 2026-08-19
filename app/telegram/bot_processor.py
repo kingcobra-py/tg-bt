@@ -15,6 +15,10 @@ from app.telegram.session_manager import session_manager
 logger = logging.getLogger(__name__)
 
 
+class JobStopped(Exception):
+    """Raised when the operator stops a running job."""
+
+
 class BotProcessor:
     """Sends commands to a target bot and collects responses until completion."""
 
@@ -27,6 +31,7 @@ class BotProcessor:
         target_group: str = "",
         on_update: Callable | None = None,
         session_token: str = "",
+        stop_event: asyncio.Event | None = None,
     ) -> None:
         self.session_id = session_id
         self.filename = filename
@@ -35,6 +40,10 @@ class BotProcessor:
         self.target_group = target_group
         self.command = command
         self.on_update = on_update
+        self.stop_event = stop_event
+
+    def _stopped(self) -> bool:
+        return bool(self.stop_event and self.stop_event.is_set())
 
     async def _emit(self, event_type: str, data: dict) -> None:
         if self.on_update:
@@ -93,6 +102,8 @@ class BotProcessor:
         retries = 0
 
         while retries <= settings.max_retries:
+            if self._stopped():
+                raise JobStopped("Stopped by operator")
             collected.clear()
             try:
                 async with client.conversation(bot_entity, timeout=settings.bot_response_timeout) as conv:
@@ -100,9 +111,15 @@ class BotProcessor:
                     await self._emit("sent", {"session_id": self.session_id, "chars": len(message_body)})
 
                     while True:
+                        if self._stopped():
+                            raise JobStopped("Stopped by operator")
                         try:
                             response = await conv.get_response(timeout=120)
+                        except asyncio.CancelledError:
+                            raise JobStopped("Stopped by operator")
                         except asyncio.TimeoutError:
+                            if self._stopped():
+                                raise JobStopped("Stopped by operator")
                             full = "\n".join(collected)
                             if collected and is_completion_message(full):
                                 break
@@ -139,6 +156,8 @@ class BotProcessor:
                 if full_text and not is_antispam_message(full_text)[0]:
                     break
 
+            except (JobStopped, asyncio.CancelledError):
+                raise JobStopped("Stopped by operator")
             except RuntimeError:
                 raise
             except Exception as exc:

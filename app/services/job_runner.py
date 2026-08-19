@@ -6,7 +6,7 @@ from collections.abc import Callable
 from app import database as db
 from app.config import settings
 from app.services.text_splitter import distribute_chunks, split_into_chunks
-from app.telegram.bot_processor import BotProcessor
+from app.telegram.bot_processor import BotProcessor, JobStopped
 from app.telegram.result_parser import ParsedResult
 from app.telegram.session_manager import session_manager
 
@@ -20,6 +20,7 @@ class JobRunner:
         self._running: dict[int, asyncio.Task] = {}
         self._listeners: dict[int, list[Callable]] = defaultdict(list)
         self._event_buffer: dict[int, list[tuple[str, dict]]] = defaultdict(list)
+        self._stop_flags: dict[int, asyncio.Event] = {}
         self._buffer_max = 500
 
     def subscribe(self, job_id: int, callback: Callable) -> None:
@@ -51,12 +52,33 @@ class JobRunner:
         task = self._running.get(job_id)
         return task is not None and not task.done()
 
+    def get_stop_event(self, job_id: int) -> asyncio.Event:
+        if job_id not in self._stop_flags:
+            self._stop_flags[job_id] = asyncio.Event()
+        return self._stop_flags[job_id]
+
     async def start_job(self, job_id: int) -> None:
         if self.is_running(job_id):
             raise RuntimeError(f"Job {job_id} is already running")
 
+        self._stop_flags[job_id] = asyncio.Event()
         task = asyncio.create_task(self._run_job(job_id))
         self._running[job_id] = task
+
+    async def stop_job(self, job_id: int) -> bool:
+        """Request stop and cancel the running task. Returns True if a job was running."""
+        event = self.get_stop_event(job_id)
+        event.set()
+        task = self._running.get(job_id)
+        if task and not task.done():
+            task.cancel()
+            return True
+        job = await db.get_job(job_id)
+        if job and job.get("status") == "running":
+            await db.update_job_stats(job_id, status="stopped")
+            await self._emit(job_id, "job_stopped", {"job_id": job_id})
+            return True
+        return False
 
     async def _run_job(self, job_id: int) -> None:
         try:
@@ -75,6 +97,7 @@ class JobRunner:
             completed = 0
             stats_lock = asyncio.Lock()
             totals = {"found": 0, "failed": 0, "forwarded": 0}
+            stop_event = self.get_stop_event(job_id)
 
             async def run_session_chunks(session_id: int, session_chunks: list[dict]) -> dict:
                 nonlocal completed
@@ -133,11 +156,14 @@ class JobRunner:
                     command=job["command"],
                     target_group=job["target_group"],
                     on_update=on_update,
+                    stop_event=stop_event,
                 )
 
                 lock = session_manager.get_lock(session_id)
                 async with lock:
                     for chunk in sorted(session_chunks, key=lambda c: c["chunk_index"]):
+                        if stop_event.is_set():
+                            raise JobStopped("Stopped by operator")
                         chunk_live["found"] = 0
                         chunk_live["failed"] = 0
                         chunk_live["forwarded"] = 0
@@ -174,6 +200,13 @@ class JobRunner:
                                 duration_seconds=result["duration"],
                             )
 
+                        except (JobStopped, asyncio.CancelledError):
+                            await db.update_chunk(
+                                chunk["id"],
+                                status="stopped",
+                                error="Stopped by operator",
+                            )
+                            raise JobStopped("Stopped by operator")
                         except Exception as exc:
                             logger.exception("Chunk %s failed", chunk["id"])
                             await db.update_chunk(
@@ -235,13 +268,19 @@ class JobRunner:
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            stopped = stop_event.is_set() or any(
+                isinstance(r, (JobStopped, asyncio.CancelledError)) for r in results
+            )
+
             total_found = totals["found"]
             total_failed = totals["failed"]
             total_forwarded = totals["forwarded"]
+            final_status = "stopped" if stopped else "completed"
+            event_name = "job_stopped" if stopped else "job_completed"
 
             await db.update_job_stats(
                 job_id,
-                status="completed",
+                status=final_status,
                 completed_chunks=completed,
                 found_count=total_found,
                 failed_count=total_failed,
@@ -249,7 +288,7 @@ class JobRunner:
             )
             await self._emit(
                 job_id,
-                "job_completed",
+                event_name,
                 {
                     "job_id": job_id,
                     "found": total_found,
@@ -263,12 +302,24 @@ class JobRunner:
                 },
             )
 
+        except (JobStopped, asyncio.CancelledError):
+            job = await db.get_job(job_id)
+            await db.update_job_stats(
+                job_id,
+                status="stopped",
+                completed_chunks=(job or {}).get("completed_chunks"),
+                found_count=(job or {}).get("found_count"),
+                failed_count=(job or {}).get("failed_count"),
+                forwarded_count=(job or {}).get("forwarded_count"),
+            )
+            await self._emit(job_id, "job_stopped", {"job_id": job_id, "message": "Stopped by operator"})
         except Exception as exc:
             logger.exception("Job %s failed", job_id)
             await db.update_job_stats(job_id, status="failed")
             await self._emit(job_id, "job_failed", {"job_id": job_id, "error": str(exc)})
         finally:
             self._running.pop(job_id, None)
+            self._stop_flags.pop(job_id, None)
 
     async def create_and_start(
         self,

@@ -374,6 +374,7 @@ $("#btn-start").addEventListener("click", async () => {
     saveCurrentJob(currentJobId);
     notify(`Job #${currentJobId} started`, "success");
     log(`Job #${currentJobId} started`, "info");
+    setStatus("running");
     connectWs(currentJobId);
   } catch (e) {
     notify("Start failed: " + e.message, "error");
@@ -386,7 +387,34 @@ function setStatus(s) {
   const el = $("#job-status");
   el.className = "status-badge " + s;
   el.textContent = s;
+  const running = s === "running";
+  $("#btn-stop").disabled = !running;
+  $("#btn-start").disabled = running;
 }
+
+function resetStats() {
+  $("#stat-found").textContent = "0";
+  $("#stat-failed").textContent = "0";
+  $("#stat-forwarded").textContent = "0";
+  $("#stat-chunks").textContent = "0/0";
+}
+
+$("#btn-stop").addEventListener("click", async () => {
+  if (!currentJobId) return notify("No running job to stop", "warn");
+  $("#btn-stop").disabled = true;
+  try {
+    await api("POST", `/api/jobs/${currentJobId}/stop`);
+    notify("Stop requested — job will halt", "warn");
+    log(`Stop requested for job #${currentJobId}`, "warn");
+    wsIntentionalClose = true;
+    if (ws) ws.close();
+    setStatus("stopped");
+    stopPolling();
+  } catch (e) {
+    notify("Stop failed: " + e.message, "error");
+    $("#btn-stop").disabled = false;
+  }
+});
 
 function resetStats() {
   $("#stat-found").textContent = "0";
@@ -404,7 +432,7 @@ function startPolling(jobId) {
       updateStats(data.job);
       loadResultsFromChunks(data.chunks);
       setStatus(data.job.status);
-      if (data.job.status === "completed" || data.job.status === "failed") {
+      if (data.job.status === "completed" || data.job.status === "failed" || data.job.status === "stopped") {
         stopPolling();
       }
     } catch (_) {}
@@ -443,6 +471,8 @@ function connectWs(jobId) {
 
   ws.onclose = () => {
     if (wsIntentionalClose) return;
+    const status = $("#job-status").textContent;
+    if (status === "stopped" || status === "completed" || status === "failed") return;
     log("Live connection dropped — reconnecting...", "warn");
     if (currentJobId === jobId) {
       setTimeout(() => {
@@ -503,11 +533,20 @@ function handleWsEvent(msg) {
       refreshJobStats();
       notify(`Job done — found: ${data.found}, forwarded: ${data.forwarded}`, "success");
       log(`Done — found: ${data.found}, failed: ${data.failed}, forwarded: ${data.forwarded}`, "found");
+      stopPolling();
       break;
     case "job_failed":
       setStatus("failed");
       notify("Job failed: " + (data.error || "unknown"), "error");
       log("Job failed: " + (data.error || "unknown"), "failed");
+      stopPolling();
+      break;
+    case "job_stopped":
+      setStatus("stopped");
+      updateStats(data);
+      notify("Job stopped", "warn");
+      log("Job stopped by operator", "warn");
+      stopPolling();
       break;
     case "message":
       if (data.text && data.text.includes("Took:")) {

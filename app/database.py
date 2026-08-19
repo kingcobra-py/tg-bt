@@ -252,7 +252,7 @@ async def update_job_stats(
     if forwarded_count is not None:
         fields.append("forwarded_count = ?")
         values.append(forwarded_count)
-    if status == "completed":
+    if status in ("completed", "stopped", "failed"):
         fields.append("finished_at = datetime('now')")
 
     if not fields:
